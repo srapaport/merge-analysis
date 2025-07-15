@@ -1,3 +1,3 @@
 fn main() {
-    println!("Hello, world!");
+    merge_analysis::merge_analysis_call();
 }
