@@ -138,7 +138,9 @@ where
 {
     let mut res = HashSet::new();
     for node in graph.successors(commit){
-        res.insert(node);
+        if NodeType::Revision == graph.properties().node_type(node){
+            res.insert(node);
+        }
     }
     res
 }
@@ -186,7 +188,7 @@ where
                     } else {
                         continue;
                     }
-                    
+
                     let path = if current_path == "." {
                         name.clone()
                     } else {
@@ -210,6 +212,5 @@ where
             }
         }
     });
-
     Some((filenames, visited_dir))
 }
