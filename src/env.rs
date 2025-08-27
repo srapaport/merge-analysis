@@ -4,7 +4,7 @@ pub const GRAPH_NAME: &str = "/poolswh/softwareheritage/graph/2025-05-18/compres
 pub const GRAPH_NAME_TEASER: &str = "/home/infres/rapaport/datasets/2024-08-23-popular-500-python/compressed/graph";
 pub const ORC_BATCH_SIZE: usize = 1024;
 
-pub const AMOUNT_MERGE_TEASER: usize = 9_082_343;
+pub const AMOUNT_MERGE_TEASER: usize = 1_123_432;
 
 pub struct Options{
     pub graph: String,

@@ -158,9 +158,7 @@ where
 {
     let mut filenames = HashSet::new();
     let parents = get_parents(commit, graph);
-    if parents.len() < 2{
-        return None;
-    }
+    assert!( parents.len() >= 2);
     let root_dirs = get_dirs(parents, graph);
     let mut visited_dir = HashSet::new();
     
