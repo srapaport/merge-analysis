@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-use swh_graph::{graph::*, labels::EdgeLabel, NodeType};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use swh_graph::{NodeType, graph::*, labels::EdgeLabel};
 
 #[derive(Debug, Clone)]
 pub struct FileSystemTree {
@@ -35,21 +35,21 @@ impl FileSystemTree {
             node_to_file_path: HashMap::new(),
         }
     }
-    
+
     pub fn add_directory(&mut self, dir_info: DirectoryInfo) {
         let path = dir_info.path.clone();
         let node_id = dir_info.node_id;
         self.node_to_dir_path.insert(node_id, path.clone());
         self.directories.insert(path, dir_info);
     }
-    
+
     pub fn add_file(&mut self, file_info: FileInfo) {
         let path = file_info.path.clone();
         let node_id = file_info.node_id;
         self.node_to_file_path.insert(node_id, path.clone());
         self.files.insert(path, file_info);
     }
-    
+
     // Check if a node_id with specific name exists
     pub fn has_node_with_name(&self, node_id: usize, name: &str) -> bool {
         // Check if it's a directory
@@ -58,17 +58,17 @@ impl FileSystemTree {
                 return dir.path.split('/').last().unwrap_or("") == name;
             }
         }
-        
+
         // Check if it's a file
         if let Some(file_path) = self.node_to_file_path.get(&node_id) {
             if let Some(file) = self.files.get(file_path) {
                 return file.filename == name;
             }
         }
-        
+
         false
     }
-    
+
     // Get node info by node_id
     pub fn get_node_info(&self, node_id: usize) -> Option<(&str, bool)> {
         // Returns (path, is_directory)
@@ -80,19 +80,19 @@ impl FileSystemTree {
         }
         None
     }
-    
+
     // Check if a file exists at a specific path
     pub fn has_file_at_path(&self, path: &str) -> Option<usize> {
         self.files.get(path).map(|file| file.node_id)
     }
-    
+
     // Check if a directory exists at a specific path
     pub fn has_directory_at_path(&self, path: &str) -> Option<usize> {
         self.directories.get(path).map(|dir| dir.node_id)
     }
 }
 
-pub fn get_dir<G: SwhLabeledForwardGraph + SwhGraphWithProperties>(
+pub fn get_root_dir<G: SwhLabeledForwardGraph + SwhGraphWithProperties>(
     commit: usize,
     graph: &G,
 ) -> Option<usize>
@@ -100,16 +100,14 @@ where
     <G as SwhGraphWithProperties>::Maps: swh_graph::properties::Maps,
     <G as SwhGraphWithProperties>::LabelNames: swh_graph::properties::LabelNames,
 {
-    for succ in graph.successors(commit) {
-        if graph.properties().node_type(succ) == NodeType::Directory {
-            return Some(succ);
-        }
-    }
-    None
+    graph
+        .successors(commit)
+        .into_iter()
+        .find(|n| graph.properties().node_type(*n) == NodeType::Directory)
 }
 
-fn get_dirs<G: SwhLabeledForwardGraph + SwhGraphWithProperties>(
-    commits: HashSet<usize>,
+fn get_root_dirs<G: SwhLabeledForwardGraph + SwhGraphWithProperties>(
+    commits: &[usize],
     graph: &G,
 ) -> HashSet<usize>
 where
@@ -117,18 +115,18 @@ where
     <G as SwhGraphWithProperties>::LabelNames: swh_graph::properties::LabelNames,
 {
     let mut dirs = HashSet::new();
-    commits.into_iter().for_each(|commit|{
-        if let Some(dir) = get_dir(commit, graph){
+    for commit in commits {
+        if let Some(dir) = get_root_dir(*commit, graph) {
             dirs.insert(dir);
         }
-    });
+    }
     dirs
 }
 
-fn get_parents<G: SwhLabeledForwardGraph + SwhGraphWithProperties + SwhLabeledBackwardGraph>(
+pub fn get_parents<G: SwhLabeledForwardGraph + SwhGraphWithProperties>(
     commit: usize,
     graph: &G,
-) -> HashSet<usize>
+) -> impl Iterator<Item = usize>
 where
     <G as SwhGraphWithProperties>::Maps: swh_graph::properties::Maps,
     <G as SwhGraphWithProperties>::LabelNames: swh_graph::properties::LabelNames,
@@ -136,19 +134,18 @@ where
     <G as SwhGraphWithProperties>::Persons: swh_graph::properties::Persons,
     <G as SwhGraphWithProperties>::Timestamps: swh_graph::properties::Timestamps,
 {
-    let mut res = HashSet::new();
-    for node in graph.successors(commit){
-        if NodeType::Revision == graph.properties().node_type(node){
-            res.insert(node);
-        }
-    }
-    res
+    graph
+        .successors(commit)
+        .into_iter()
+        .filter(|n| graph.properties().node_type(*n) == NodeType::Revision)
 }
 
-pub fn get_list_of_content_parents<G: SwhLabeledForwardGraph + SwhGraphWithProperties + SwhLabeledBackwardGraph>(
+pub fn get_list_of_content_parents<
+    G: SwhLabeledForwardGraph + SwhGraphWithProperties + SwhLabeledBackwardGraph,
+>(
     commit: usize,
     graph: &G,
-) -> Option<(HashSet<String>, HashSet<usize>)>
+) -> Option<(Vec<String>, BTreeSet<usize>)>
 where
     <G as SwhGraphWithProperties>::Maps: swh_graph::properties::Maps,
     <G as SwhGraphWithProperties>::LabelNames: swh_graph::properties::LabelNames,
@@ -156,52 +153,59 @@ where
     <G as SwhGraphWithProperties>::Persons: swh_graph::properties::Persons,
     <G as SwhGraphWithProperties>::Timestamps: swh_graph::properties::Timestamps,
 {
-    let mut filenames = HashSet::new();
-    let parents = get_parents(commit, graph);
-    assert!( parents.len() >= 2);
-    let root_dirs = get_dirs(parents, graph);
-    let mut visited_dir = HashSet::new();
-    
-    root_dirs.into_iter().for_each(|dir|{
+    let mut filenames = vec![];
+    let parents = get_parents(commit, graph).collect::<Vec<_>>();
+    assert!(parents.len() >= 2);
+    let root_dirs = get_root_dirs(&parents, graph);
+    let mut visited_dir = BTreeSet::new();
+
+    for dir in root_dirs {
         let mut path_node: HashMap<usize, String> = HashMap::new();
         path_node.insert(dir, ".".to_string());
 
-        let mut to_visit = VecDeque::new();
-        to_visit.push_back(dir);
+        let mut to_visit = Vec::new();
+        to_visit.push(dir);
         let mut visited = HashSet::new();
 
-        while let Some(node) = to_visit.pop_front(){
+        while let Some(node) = to_visit.pop() {
             if visited.contains(&node) {
                 continue;
             }
             visited.insert(node);
-            let current_path = path_node.get(&node).expect("couldn't find path in path_node").clone();
+            let current_path = path_node
+                .get(&node)
+                .expect("couldn't find path in path_node")
+                .clone();
             for (succ, labels) in graph.labeled_successors(node) {
                 for label in labels {
-                    let name: String;
-                    if let EdgeLabel::DirEntry(dir_entry) = label {
-                        name = String::from_utf8_lossy(
-                            &graph.properties().label_name(dir_entry.filename_id())
-                        ).to_string();
+                    let name = if let EdgeLabel::DirEntry(dir_entry) = label {
+                        if let Ok(name) = String::from_utf8(
+                            graph.properties().label_name(dir_entry.filename_id()),
+                        ) {
+                            name
+                        } else {
+                            todo!("count");
+                            continue;
+                        }
                     } else {
                         continue;
-                    }
+                    };
 
                     let path = if current_path == "." {
-                        name.clone()
+                        name
                     } else {
                         format!("{}/{}", current_path, name)
                     };
-                    
+
                     match graph.properties().node_type(succ) {
                         NodeType::Content => {
-                            filenames.insert(path);
+                            filenames.push(path);
                         }
-                        NodeType::Directory => {                            
+                        NodeType::Directory => {
                             path_node.insert(succ, path);
-                            if !visited_dir.contains(&succ){
+                            if !visited_dir.contains(&succ) {
                                 visited_dir.insert(succ);
-                                to_visit.push_back(succ);
+                                to_visit.push(succ);
                             }
                         }
                         _ => continue,
@@ -209,6 +213,6 @@ where
                 }
             }
         }
-    });
+    }
     Some((filenames, visited_dir))
 }

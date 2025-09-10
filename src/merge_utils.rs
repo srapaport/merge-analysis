@@ -1,26 +1,24 @@
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
+use std::thread;
 
+use crate::env;
+use crate::fs;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::ThreadPoolBuilder;
+use swh_graph::NodeType;
 use swh_graph::graph::*;
 use swh_graph::labels::EdgeLabel;
 use swh_graph::mph::DynMphf;
-use swh_graph::NodeType;
-use crate::env;
-use crate::fs;
 
-pub fn get_num_merge<G: SwhLabeledForwardGraph + SwhGraphWithProperties>(
-    graph: &G
-) -> usize
+pub fn get_num_merge<G: SwhLabeledForwardGraph + SwhGraphWithProperties>(graph: &G) -> usize
 where
     <G as SwhGraphWithProperties>::Maps: swh_graph::properties::Maps,
     <G as SwhGraphWithProperties>::LabelNames: swh_graph::properties::LabelNames,
@@ -37,11 +35,11 @@ where
     );
     bar.set_message("Counting merge");
     let mut num_merge = 0;
-    for node in 0..graph.num_nodes(){
-        if graph.properties().node_type(node) != NodeType::Revision{
+    for node in 0..graph.num_nodes() {
+        if graph.properties().node_type(node) != NodeType::Revision {
             continue;
         }
-        if is_merge(graph, node){
+        if is_merge(graph, node) {
             num_merge += 1;
         }
         bar.inc(1);
@@ -51,7 +49,7 @@ where
     num_merge
 }
 
-fn is_merge<G: SwhLabeledForwardGraph + SwhGraphWithProperties>(graph: &G, node: usize)-> bool
+fn is_merge<G: SwhLabeledForwardGraph + SwhGraphWithProperties>(graph: &G, node: usize) -> bool
 where
     <G as SwhGraphWithProperties>::Maps: swh_graph::properties::Maps,
     <G as SwhGraphWithProperties>::LabelNames: swh_graph::properties::LabelNames,
@@ -59,34 +57,31 @@ where
     <G as SwhGraphWithProperties>::Persons: swh_graph::properties::Persons,
     <G as SwhGraphWithProperties>::Timestamps: swh_graph::properties::Timestamps,
 {
-    
-    graph.properties().node_type(node) == NodeType::Revision && graph.successors(node).into_iter().filter(|n|graph.properties().node_type(*n)==NodeType::Revision).nth(1).is_some()
+    graph.properties().node_type(node) == NodeType::Revision
+        && fs::get_parents(node, graph).nth(1).is_some()
 }
 
-pub fn merge_analysis_multi_thread(opts: &env::Options){
-    let (tx, rx) = channel::<
-        Option<env::Changes>,
-    >();
+pub fn merge_analysis_multi_thread(opts: &env::Options) {
+    let (tx, rx) = channel::<Option<env::Changes>>();
     let graph = SwhBidirectionalGraph::new(PathBuf::from(&opts.graph))
-            .expect("Could not load graph")
-            .init_properties()
-            .load_properties(|properties| properties.load_maps::<DynMphf>())
-            .expect("Could not load maps")
-            .load_properties(|properties| properties.load_timestamps())
-            .expect("Could not load timestamps")
-            .load_properties(|properties| properties.load_persons())
-            .expect("Could not load persons")
-            .load_properties(|properties| properties.load_strings())
-            .expect("Could not load strings")
-            .load_properties(|properties| properties.load_label_names())
-            .expect("Could no load label names")
-            .load_labels()
-            .expect("Could not load labels");
+        .expect("Could not load graph")
+        .init_properties()
+        .load_properties(|properties| properties.load_maps::<DynMphf>())
+        .expect("Could not load maps")
+        .load_properties(|properties| properties.load_timestamps())
+        .expect("Could not load timestamps")
+        .load_properties(|properties| properties.load_persons())
+        .expect("Could not load persons")
+        .load_properties(|properties| properties.load_strings())
+        .expect("Could not load strings")
+        .load_properties(|properties| properties.load_label_names())
+        .expect("Could no load label names")
+        .load_labels()
+        .expect("Could not load labels");
     let number_of_merge = opts.amount_merge.unwrap_or_else(|| get_num_merge(&graph));
 
     let jh = thread::spawn(move || {
         let mut merge = 0;
-        let mut rev = 0;
         let amount_tx_err = AtomicUsize::new(0);
         let amount_no_root_dir = AtomicUsize::new(0);
         let amount_sent = AtomicUsize::new(0);
@@ -98,9 +93,9 @@ pub fn merge_analysis_multi_thread(opts: &env::Options){
             .build()
             .unwrap();
         pool.install(|| {
-            rayon::scope(|thread|{
-                for node in 0..graph.num_nodes(){
-                    if !is_merge(&graph, node){
+            rayon::scope(|thread| {
+                for node in 0..graph.num_nodes() {
+                    if !is_merge(&graph, node) {
                         continue;
                     }
                     merge += 1;
@@ -111,38 +106,41 @@ pub fn merge_analysis_multi_thread(opts: &env::Options){
                         let amount_tx_err = &amount_tx_err;
                         let amount_no_root_dir = &amount_no_root_dir;
                         let amount_sent = &amount_sent;
-                        move |_|{
-                            if let Some((deleted, created, ghstack_poisoned, message_status)) = status_merge(node, &graph){
-                                let msg: String =
-                                    match message_status{
-                                        env::MsgStatus::Utf8 => String::from_utf8(graph.properties().message(node).unwrap()).unwrap(),
-                                        env::MsgStatus::Unreadable => String::new()
-                                    };
-                                if let Err(_) = tx.send(Some(env::Changes{
+                        move |_| {
+                            if let Some((deleted, created, ghstack_poisoned, message_status)) =
+                                status_merge(node, &graph)
+                            {
+                                let msg: String = match message_status {
+                                    env::MsgStatus::Utf8 => {
+                                        String::from_utf8(graph.properties().message(node).unwrap())
+                                            .unwrap()
+                                    }
+                                    env::MsgStatus::Unreadable => String::new(),
+                                };
+                                if let Err(_) = tx.send(Some(env::Changes {
                                     commit: graph.properties().swhid(node).to_string(),
                                     created: created.into_iter().collect::<Vec<_>>().join(","),
                                     deleted: deleted.into_iter().collect::<Vec<_>>().join(","),
                                     poisoned: ghstack_poisoned,
                                     message: msg,
                                     message_status,
-                                })){
+                                })) {
                                     amount_tx_err.fetch_add(1, Ordering::Relaxed);
                                     tx_err.lock().unwrap().insert(node);
-                                } else{
+                                } else {
                                     amount_sent.fetch_add(1, Ordering::Relaxed);
                                 }
-                            }
-                            else{
+                            } else {
                                 amount_no_root_dir.fetch_add(1, Ordering::Relaxed);
-                                if let Err(_) = tx.send(None){
+                                if let Err(_) = tx.send(None) {
                                     amount_tx_err.fetch_add(1, Ordering::Relaxed);
                                     tx_err.lock().unwrap().insert(node);
-                                }
-                                else{
+                                } else {
                                     amount_sent.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
-                    }});
+                        }
+                    });
                 }
             });
         });
@@ -161,16 +159,11 @@ pub fn merge_analysis_multi_thread(opts: &env::Options){
             "Amount of data sent: {}",
             amount_sent.load(Ordering::Relaxed)
         );
-        println!(
-            "Amount of total merge: {}",
-            merge
-        );
+        println!("Amount of total merge: {}", merge);
     });
 
     // let mut amount_not_received = 0;
-    let mut csv_wrt = csv::WriterBuilder::new()
-        .from_path(&opts.results)
-        .unwrap();
+    let mut csv_wrt = csv::WriterBuilder::new().from_path(&opts.results).unwrap();
     let bar_wrt = ProgressBar::new(number_of_merge as u64);
     bar_wrt.set_style(
         ProgressStyle::with_template(
@@ -178,7 +171,7 @@ pub fn merge_analysis_multi_thread(opts: &env::Options){
         )
         .unwrap(),
     );
-    bar_wrt.set_message("writing data"); 
+    bar_wrt.set_message("writing data");
 
     let mut amount_recv = 0;
     while let Ok(recv) = rx.recv() {
@@ -234,11 +227,7 @@ pub fn merge_analysis_multi_thread(opts: &env::Options){
     //     "Amount of transmissions not received: {}",
     //     amount_not_received
     // );
-    println!(
-        "Amount of transmissions received: {}",
-        amount_recv
-    );
-    
+    println!("Amount of transmissions received: {}", amount_recv);
 
     jh.join().unwrap();
 }
@@ -312,7 +301,7 @@ pub fn merge_analysis_multi_thread(opts: &env::Options){
 pub fn status_merge<G: SwhLabeledForwardGraph + SwhGraphWithProperties + SwhLabeledBackwardGraph>(
     commit: usize,
     graph: &G,
-) -> Option<(HashSet<String>, Vec<String>, bool, env::MsgStatus)>
+) -> Option<(Vec<String>, Vec<String>, bool, env::MsgStatus)>
 where
     <G as SwhGraphWithProperties>::Maps: swh_graph::properties::Maps,
     <G as SwhGraphWithProperties>::LabelNames: swh_graph::properties::LabelNames,
@@ -321,43 +310,50 @@ where
     <G as SwhGraphWithProperties>::Timestamps: swh_graph::properties::Timestamps,
 {
     let mut created_files = vec![];
-    let Some((mut fs_parents, visited_dir)) = fs::get_list_of_content_parents(commit, graph) else{
+    let Some((mut fs_parents, visited_dir)) = fs::get_list_of_content_parents(commit, graph) else {
         return None;
     };
-    let Some(root_dir) = fs::get_dir(commit, graph) else {return None};
+    let Some(root_dir) = fs::get_root_dir(commit, graph) else {
+        return None;
+    };
 
     let mut message_status = env::MsgStatus::Unreadable;
     let mut ghstack_poisoned = false;
-    if let Ok(msg) = str::from_utf8(
-            &graph.properties().message(commit).unwrap()
-        ){
-            ghstack_poisoned = msg.contains("[ghstack-poisoned]");
-            message_status = env::MsgStatus::Utf8;
-        };
+    if let Ok(msg) = str::from_utf8(&graph.properties().message(commit).unwrap()) {
+        ghstack_poisoned = msg.contains("[ghstack-poisoned]");
+        message_status = env::MsgStatus::Utf8;
+    };
     let mut path_node: HashMap<usize, String> = HashMap::new();
     path_node.insert(root_dir, ".".to_string());
 
     let mut to_visit = vec![];
     to_visit.push(root_dir);
-    let mut visited = HashSet::new();
-    while let Some(node) = to_visit.pop(){
-        if visited.contains(&node){
+    let mut visited = BTreeSet::new();
+    while let Some(node) = to_visit.pop() { 
+        if visited.contains(&node) {
             continue;
         }
         visited.insert(node);
 
-        let current_path = path_node.get(&node).expect("couldn't find path in path_node").clone();
-        for (succ, labels) in graph.labeled_successors(node){
-            for label in labels{
-                let name =
-                if let EdgeLabel::DirEntry(dir_entry) = label {
-                    String::from_utf8(
-                        graph.properties().label_name(dir_entry.filename_id())
-                    ).unwrap()
+        let current_path = path_node
+            .get(&node)
+            .expect("couldn't find path in path_node")
+            .clone();
+        for (succ, labels) in graph.labeled_successors(node) {
+            for label in labels {
+                let name = if let EdgeLabel::DirEntry(dir_entry) = label {
+                    if let Ok(name) =
+                        String::from_utf8(graph.properties().label_name(dir_entry.filename_id()))
+                    {
+                        name
+                    } else {
+                        todo!("count");
+                        continue;
+                    }
                 } else {
                     continue;
                 };
-                
+
                 let path = if current_path == "." {
                     name
                 } else {
@@ -365,13 +361,16 @@ where
                 };
                 match graph.properties().node_type(succ) {
                     NodeType::Content => {
-                        if !fs_parents.remove(&path){
+                        if let Some(pos) = fs_parents.iter().position(|x| x == &path) {
+                            fs_parents.remove(pos); // or swap_remove(pos)
+                        } else {
                             created_files.push(path);
                         }
                     }
-                    NodeType::Directory => {    
-                        path_node.insert(succ, path.clone());                 
-                        if visited_dir.contains(&succ){
+                    NodeType::Directory => {
+                        path_node.insert(succ, path.clone());
+                        
+                        if visited_dir.contains(&succ) {
                             let prefix = format!("{}/", path);
                             fs_parents.retain(|filename| !filename.starts_with(&prefix));
                         } else {
@@ -383,7 +382,7 @@ where
             }
         }
     }
-    if fs_parents.len() > 0 || created_files.len() > 0{
+    if fs_parents.len() > 0 || created_files.len() > 0 {
         return Some((fs_parents, created_files, ghstack_poisoned, message_status));
     }
     None
