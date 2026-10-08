@@ -47,7 +47,7 @@ fn main(){
 fn status_merge<G: SwhLabeledForwardGraph + SwhGraphWithProperties + SwhLabeledBackwardGraph>(
     commit: usize,
     graph: &G,
-) -> Option<(HashSet<String>, HashSet<String>)>
+) -> Option<(Vec<String>, HashSet<String>)>
 where
     <G as SwhGraphWithProperties>::Maps: swh_graph::properties::Maps,
     <G as SwhGraphWithProperties>::LabelNames: swh_graph::properties::LabelNames,
@@ -65,7 +65,7 @@ where
             ).unwrap()
         ).unwrap();
     let ghstack_poisoned = msg.contains("[ghstack-poisoned]");
-    let Some(root_dir) = fs::get_dir(commit, graph) else {return None};
+    let Some(root_dir) = fs::get_root_dir(commit, graph) else {return None};
     
     let mut path_node: HashMap<usize, String> = HashMap::new();
     path_node.insert(root_dir, ".".to_string());
@@ -98,9 +98,9 @@ where
                 };
                 match graph.properties().node_type(succ) {
                     NodeType::Content => {
-                        if !fs_parents.remove(&path){
-                            created_files.insert(path);
-                        }
+                        // if !fs_parents.remove(&path){
+                        //     created_files.insert(path);
+                        // }
                     }
                     NodeType::Directory => {    
                         path_node.insert(succ, path.clone());                 
